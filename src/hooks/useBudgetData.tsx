@@ -35,33 +35,44 @@ export function useBudgetData() {
   const [budgetData, setBudgetData] = useState<BudgetData>(defaultBudgetData);
   const [loading, setLoading] = useState(true);
 
-  // Set up auth state listener
+  // Set up auth state listener — gracefully handle missing Supabase connection
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+    let subscription: { unsubscribe: () => void } | null = null;
+
+    try {
+      const { data } = supabase.auth.onAuthStateChange(
+        (event, session) => {
+          setSession(session);
+          setUser(session?.user ?? null);
+
+          if (session?.user) {
+            setTimeout(() => {
+              loadBudgetData(session.user.id);
+            }, 0);
+          }
+        }
+      );
+      subscription = data.subscription;
+
+      supabase.auth.getSession().then(({ data: { session } }) => {
         setSession(session);
         setUser(session?.user ?? null);
-        
+
         if (session?.user) {
-          setTimeout(() => {
-            loadBudgetData(session.user.id);
-          }, 0);
+          loadBudgetData(session.user.id);
+        } else {
+          setLoading(false);
         }
-      }
-    );
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      
-      if (session?.user) {
-        loadBudgetData(session.user.id);
-      } else {
+      }).catch(() => {
+        // Supabase not connected — work with local state
         setLoading(false);
-      }
-    });
+      });
+    } catch {
+      // Supabase not configured — work with local state
+      setLoading(false);
+    }
 
-    return () => subscription.unsubscribe();
+    return () => subscription?.unsubscribe();
   }, []);
 
   const loadBudgetData = async (userId: string) => {
@@ -127,22 +138,19 @@ export function useBudgetData() {
         });
       }
     } catch (error) {
-      console.error("Error loading budget data:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load budget data",
-        variant: "destructive",
-      });
+      // Silently fall back to defaults when Supabase isn't connected
+      console.warn("Could not load budget data from Supabase, using defaults:", error);
     } finally {
       setLoading(false);
     }
   };
 
   const saveBudgetData = async (data: BudgetData) => {
-    if (!user) return;
-
-    // Update state immediately (optimistic update) so calculations reflect changes instantly
+    // Always update local state so the UI works without auth
     setBudgetData(data);
+
+    // Only persist to Supabase if the user is logged in
+    if (!user) return;
 
     try {
       const { error } = await supabase
@@ -176,23 +184,28 @@ export function useBudgetData() {
 
       if (error) throw error;
     } catch (error) {
-      console.error("Error saving budget data:", error);
-      toast({
-        title: "Error",
-        description: "Failed to save budget data",
-        variant: "destructive",
-      });
+      // Silently fail — data is still in local state
+      console.warn("Could not save budget data to Supabase:", error);
     }
   };
 
   const handleSignOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      toast({
-        title: "Error",
-        description: "Failed to sign out",
-        variant: "destructive",
-      });
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        toast({
+          title: "Error",
+          description: "Failed to sign out",
+          variant: "destructive",
+        });
+      } else {
+        setUser(null);
+        setSession(null);
+      }
+    } catch {
+      // Supabase not connected — just clear local state
+      setUser(null);
+      setSession(null);
     }
   };
 
